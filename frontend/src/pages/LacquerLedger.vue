@@ -6,11 +6,18 @@ import LayerStack from '../components/common/LayerStack.vue';
 import EmptyPanel from '../components/common/EmptyPanel.vue';
 import { useLacquerStore } from '../stores/lacquerStore';
 import { useBoardStore } from '../stores/boardStore';
+import { useReworkStore } from '../stores/reworkStore';
 import { averageThickness, curingInRange, formatDate, layersToTarget, TARGET_TOTAL_MM } from '../utils/layer';
 import { MIX_RATIOS, type LacquerLayer } from '../types/lacquer-layer';
 
 const lacquerStore = useLacquerStore();
 const boardStore = useBoardStore();
+const reworkStore = useReworkStore();
+
+/** 该遍次是否被待复核返工单关联 */
+function lacquerPending(layerId: string) {
+  return reworkStore.pendingByRef('lacquer', layerId);
+}
 
 const guqinOptions = computed(() => Array.from(new Set([...boardStore.guqinNos, ...lacquerStore.guqinNos])).sort());
 const selectedGuqin = ref(guqinOptions.value[0] ?? '');
@@ -185,7 +192,18 @@ async function remove(layer: LacquerLayer) {
           <el-table-column label="施工日期" width="110">
             <template #default="scope">{{ formatDate(scope.row.appliedAt) }}</template>
           </el-table-column>
-          <el-table-column prop="operator" label="髹漆人" width="90" />
+          <el-table-column prop="operator" label="髹漆人" width="120">
+            <template #default="scope">
+              <span>{{ scope.row.operator }}</span>
+              <el-tooltip
+                v-if="lacquerPending(scope.row.id)"
+                :title="`被待复核返工单关联：${lacquerPending(scope.row.id)?.orderNo}`"
+                placement="top"
+              >
+                <el-tag type="danger" size="small" effect="dark" class="rework-tag">返工待核</el-tag>
+              </el-tooltip>
+            </template>
+          </el-table-column>
           <el-table-column prop="remark" label="备注" min-width="120" />
           <el-table-column label="操作" width="150" fixed="right">
             <template #default="scope">
@@ -273,5 +291,8 @@ async function remove(layer: LacquerLayer) {
 .card-note {
   font-size: 12px;
   color: #8a7a68;
+}
+.rework-tag {
+  margin-left: 6px;
 }
 </style>

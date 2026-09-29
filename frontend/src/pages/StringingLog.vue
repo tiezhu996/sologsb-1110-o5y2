@@ -7,6 +7,7 @@ import EmptyPanel from '../components/common/EmptyPanel.vue';
 import ToneTextEditor from '../components/common/ToneTextEditor.vue';
 import { useStringingStore } from '../stores/stringingStore';
 import { useBoardStore } from '../stores/boardStore';
+import { useReworkStore } from '../stores/reworkStore';
 import { formatDate } from '../utils/layer';
 import {
   NINE_VIRTUES,
@@ -21,6 +22,12 @@ import {
 const route = useRoute();
 const stringingStore = useStringingStore();
 const boardStore = useBoardStore();
+const reworkStore = useReworkStore();
+
+/** 存在待复核返工的琴号：上弦页不接受其评价 */
+const blockedGuqinNos = computed(() => new Set(reworkStore.reworks.filter((r) => r.status === 'pending').map((r) => r.guqinNo)));
+const blockedCount = computed(() => blockedGuqinNos.value.size);
+const isBlocked = (guqinNo: string) => blockedGuqinNos.value.has(guqinNo);
 
 const dialogVisible = ref(false);
 const editingId = ref('');
@@ -78,6 +85,10 @@ function openCreate() {
     strungAt: new Date().toISOString().slice(0, 10),
     operator: '周砚秋',
   };
+  if (isBlocked(form.value.guqinNo)) {
+    ElMessage.warning(`${form.value.guqinNo} 存在待复核返工，复核完成前不接受上弦评价`);
+    return;
+  }
   tone.value = {
     sanNote: '散音宽厚，一弦如钟。',
     anNote: '按音走手顺滑，无抗指。',
@@ -88,6 +99,10 @@ function openCreate() {
 }
 
 function openEdit(stringing: Stringing) {
+  if (isBlocked(stringing.guqinNo)) {
+    ElMessage.warning(`${stringing.guqinNo} 存在待复核返工，复核完成前不接受评价修改`);
+    return;
+  }
   editingId.value = stringing.id;
   form.value = {
     guqinNo: stringing.guqinNo,
@@ -110,6 +125,10 @@ function openEdit(stringing: Stringing) {
 async function submit() {
   const ok = await formRef.value?.validate().catch(() => false);
   if (!ok) return;
+  if (isBlocked(form.value.guqinNo.trim())) {
+    ElMessage.error(`${form.value.guqinNo.trim()} 存在待复核返工，复核完成前不接受上弦评价`);
+    return;
+  }
   const payload = {
     guqinNo: form.value.guqinNo,
     stringType: form.value.stringType,
@@ -124,14 +143,18 @@ async function submit() {
     nineVirtues: tone.value.nineVirtues,
     keepVersion: true,
   };
-  if (editingId.value) {
-    await stringingStore.updateStringing(editingId.value, payload);
-    ElMessage.success('已保存评语，改动前的文字已存入版本对照');
-  } else {
-    await stringingStore.addStringing(payload);
-    ElMessage.success(`已登记 ${payload.guqinNo} 的上弦与音色评语`);
+  try {
+    if (editingId.value) {
+      await stringingStore.updateStringing(editingId.value, payload);
+      ElMessage.success('已保存评语，改动前的文字已存入版本对照');
+    } else {
+      await stringingStore.addStringing(payload);
+      ElMessage.success(`已登记 ${payload.guqinNo} 的上弦与音色评语`);
+    }
+    dialogVisible.value = false;
+  } catch (error) {
+    ElMessage.error((error as Error).message);
   }
-  dialogVisible.value = false;
 }
 
 async function remove(stringing: Stringing) {
@@ -149,10 +172,21 @@ async function remove(stringing: Stringing) {
     <h2 class="page-title">上弦记录与音色文字评价</h2>
     <p class="page-desc">散音 / 按音 / 泛音三段评语均为纯文本，保存后可检索关键字并对照历史版本；不做音频文件与波形处理。</p>
 
+    <el-alert
+      v-if="blockedCount"
+      class="block-alert"
+      type="warning"
+      show-icon
+      :closable="false"
+      title="存在待复核返工"
+      description="以下琴号在返工复核完成前不接受上弦评价（含新增与修改），请先到「返工处置」完成复核。"
+    />
+
     <div class="toolbar">
       <el-button type="primary" @click="openCreate">登记上弦记录</el-button>
       <el-tag type="info" effect="plain">九德：{{ NINE_VIRTUES.join(' · ') }}</el-tag>
       <el-tag v-if="stringingStore.defectCount" type="warning" effect="plain">有缺陷记录 {{ stringingStore.defectCount }} 条</el-tag>
+      <el-tag v-if="blockedCount" type="danger" effect="plain">待复核返工锁定 {{ blockedCount }} 张琴</el-tag>
     </div>
 
     <FilterBar
@@ -169,7 +203,14 @@ async function remove(stringing: Stringing) {
 
     <el-card v-else shadow="never" class="block">
       <el-table :data="visible" size="small" border>
-        <el-table-column prop="guqinNo" label="琴号" width="100" />
+        <el-table-column label="琴号" width="150">
+          <template #default="scope">
+            <span>{{ scope.row.guqinNo }}</span>
+            <el-tooltip v-if="isBlocked(scope.row.guqinNo)" content="待复核返工，评价锁定" placement="top">
+              <el-tag type="danger" size="small" effect="dark" class="block-tag">返工待核</el-tag>
+            </el-tooltip>
+          </template>
+        </el-table-column>
         <el-table-column prop="stringType" label="弦材质" width="90" />
         <el-table-column prop="nut" label="雁足与绒扣" width="170" />
         <el-table-column prop="stringGap" label="弦距(mm)" width="90" />
@@ -201,8 +242,10 @@ async function remove(stringing: Stringing) {
         </el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="scope">
-            <el-button link type="primary" @click="openEdit(scope.row)">编辑评语</el-button>
-            <el-button link type="danger" @click="remove(scope.row)">删除</el-button>
+            <el-button link type="primary" :disabled="isBlocked(scope.row.guqinNo)" @click="openEdit(scope.row)">
+              编辑评语
+            </el-button>
+            <el-button link type="danger" :disabled="isBlocked(scope.row.guqinNo)" @click="remove(scope.row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -212,6 +255,9 @@ async function remove(stringing: Stringing) {
       <el-form ref="formRef" :model="form" :rules="rules" label-width="120px">
         <el-form-item label="琴号" prop="guqinNo">
           <el-input v-model="form.guqinNo" placeholder="如：Q-2506" maxlength="20" style="width: 200px" />
+          <el-tag v-if="isBlocked(form.guqinNo.trim())" type="danger" size="small" effect="dark" class="block-tag">
+            该琴待复核返工，不能保存
+          </el-tag>
         </el-form-item>
         <el-form-item label="弦材质">
           <el-select v-model="form.stringType" style="width: 160px">
@@ -264,6 +310,13 @@ async function remove(stringing: Stringing) {
   align-items: center;
   margin-bottom: 12px;
   flex-wrap: wrap;
+}
+.block-alert {
+  margin-bottom: 12px;
+  border-radius: 8px;
+}
+.block-tag {
+  margin-left: 8px;
 }
 .block {
   border-radius: 8px;

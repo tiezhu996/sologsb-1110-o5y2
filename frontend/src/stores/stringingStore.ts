@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { db } from '../utils/db';
 import { uid } from '../utils/id';
 import { toPlain } from '../utils/plain';
+import { useReworkStore } from './reworkStore';
 import type { StringDefect, StringType, Stringing, ToneVersion } from '../types/stringing';
 
 export interface StringingInput {
@@ -52,12 +53,20 @@ export const useStringingStore = defineStore('stringing', {
   },
 
   actions: {
+    /** 琴号存在待复核返工时，上弦记录/评价一律拒收 */
+    assertStringingAllowed(guqinNo: string) {
+      if (useReworkStore().hasPending(guqinNo)) {
+        throw new Error(`${guqinNo} 存在待复核返工，复核完成前不接受上弦评价`);
+      }
+    },
+
     async hydrate() {
       this.stringings = await db.stringings.orderBy('strungAt').reverse().toArray();
       this.hydrated = true;
     },
 
     async addStringing(input: StringingInput): Promise<Stringing> {
+      this.assertStringingAllowed(input.guqinNo.trim());
       const stringing: Stringing = {
         id: uid('stringing'),
         guqinNo: input.guqinNo.trim(),
@@ -82,6 +91,11 @@ export const useStringingStore = defineStore('stringing', {
     async updateStringing(id: string, patch: Partial<StringingInput>) {
       const current = this.stringings.find((s) => s.id === id);
       if (!current) return;
+      // 该琴有待复核返工时，既有评价也不接受修改
+      this.assertStringingAllowed(current.guqinNo);
+      if (patch.guqinNo && patch.guqinNo.trim() !== current.guqinNo) {
+        this.assertStringingAllowed(patch.guqinNo.trim());
+      }
       const notesChanged =
         (patch.sanNote !== undefined && patch.sanNote.trim() !== current.sanNote) ||
         (patch.anNote !== undefined && patch.anNote.trim() !== current.anNote) ||

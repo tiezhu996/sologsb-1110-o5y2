@@ -9,7 +9,9 @@ import { useBoardStore } from '../stores/boardStore';
 import { useChamberStore } from '../stores/chamberStore';
 import { useLacquerStore } from '../stores/lacquerStore';
 import { useStringingStore } from '../stores/stringingStore';
+import { useReworkStore } from '../stores/reworkStore';
 import { formatDate } from '../utils/layer';
+import { REWORK_STAGE_LABELS } from '../utils/rework';
 import { WOOD_SPECIES } from '../types/wood-board';
 import type { TimelineEvent } from '../types/ui';
 
@@ -18,6 +20,7 @@ const boardStore = useBoardStore();
 const chamberStore = useChamberStore();
 const lacquerStore = useLacquerStore();
 const stringingStore = useStringingStore();
+const reworkStore = useReworkStore();
 const { progressList, summary } = useStageProgress();
 
 const stageParam = computed(() => (typeof route.query.stage === 'string' ? route.query.stage : ''));
@@ -41,8 +44,6 @@ const stageBadges = computed(() =>
     count: summary.value.counts[key],
   })),
 );
-
-const pendingString = computed(() => progressList.value.filter((item) => !item.stages.find((s) => s.key === 'string')?.done).length);
 
 const events = computed<TimelineEvent[]>(() => {
   const list: TimelineEvent[] = [];
@@ -70,6 +71,17 @@ const events = computed<TimelineEvent[]>(() => {
       type: 'success',
     });
   });
+  reworkStore.reworks.forEach((rework) => {
+    list.push({
+      label: rework.status === 'pending' ? `返工登记（待复核）· ${rework.guqinNo}` : `返工复核完成 · ${rework.guqinNo}`,
+      at: formatDate(rework.status === 'done' && rework.reviewedAt ? rework.reviewedAt : rework.registeredAt),
+      text:
+        rework.status === 'pending'
+          ? `${REWORK_STAGE_LABELS[rework.stage]}返工，责任师傅 ${rework.responsible}，关联 ${rework.ref?.refLabel ?? '—'}：${rework.reason}`
+          : `${REWORK_STAGE_LABELS[rework.stage]}返工经 ${rework.reviewer} 复核：${rework.conclusion}`,
+      type: rework.status === 'pending' ? 'danger' : 'info',
+    });
+  });
   return list.sort((a, b) => b.at.localeCompare(a.at)).slice(0, 8);
 });
 </script>
@@ -82,6 +94,16 @@ const events = computed<TimelineEvent[]>(() => {
       IndexedDB（gbguqin-db）。
     </p>
 
+    <el-alert
+      v-if="summary.guqinWithPending"
+      class="rework-alert"
+      type="warning"
+      show-icon
+      :closable="false"
+      title="存在待复核返工"
+      :description="`${summary.guqinWithPending} 张琴、共 ${summary.pendingRework} 单返工待复核；待复核期间上弦页不接受对应琴号的评价。`"
+    />
+
     <el-row :gutter="12" class="stat-row">
       <el-col :xs="12" :md="6">
         <StatBadge label="在制琴坯" :value="progressList.length" unit="张" />
@@ -93,7 +115,7 @@ const events = computed<TimelineEvent[]>(() => {
         <StatBadge label="平均推进比" :value="summary.averageRatio" unit="%" status="warning" />
       </el-col>
       <el-col :xs="12" :md="6">
-        <StatBadge label="待上弦" :value="pendingString" unit="张" :status="pendingString ? 'danger' : 'success'" />
+        <StatBadge label="返工待复核" :value="summary.pendingRework" unit="单" :status="summary.pendingRework ? 'danger' : 'success'" />
       </el-col>
     </el-row>
 
@@ -101,7 +123,7 @@ const events = computed<TimelineEvent[]>(() => {
       <template #header>
         <div class="card-head">
           <span>阶段统计（已完成琴坯数）</span>
-          <span class="card-note">板材 {{ boardStore.boards.length }} 块（可用 {{ boardStore.usableCount }} 块）· 髹漆 {{ lacquerStore.layers.length }} 遍 · 荫房异常 {{ lacquerStore.outOfRangeCount }} 遍</span>
+          <span class="card-note">板材 {{ boardStore.boards.length }} 块（可用 {{ boardStore.usableCount }} 块）· 髹漆 {{ lacquerStore.layers.length }} 遍 · 荫房异常 {{ lacquerStore.outOfRangeCount }} 遍 · 待复核返工 {{ reworkStore.pendingCount }} 单</span>
         </div>
       </template>
       <el-row :gutter="12">
@@ -130,22 +152,36 @@ const events = computed<TimelineEvent[]>(() => {
       <el-table :data="visible" size="small" border>
         <el-table-column prop="guqinNo" label="琴号" width="110" />
         <el-table-column prop="species" label="树种" width="90" />
-        <el-table-column label="四阶段" min-width="300">
+        <el-table-column label="四阶段" min-width="320">
           <template #default="scope">
-            <el-tag
+            <el-tooltip
               v-for="stage in scope.row.stages"
               :key="stage.key"
-              class="stage-tag"
-              :type="stage.done ? 'success' : 'info'"
-              effect="plain"
+              :disabled="!stage.pendingRework"
+              content="该工序有待复核返工"
+              placement="top"
             >
-              {{ stage.label }}{{ stage.done ? '✓' : '…' }}
-            </el-tag>
+              <el-tag
+                class="stage-tag"
+                :type="stage.pendingRework ? 'danger' : stage.done ? 'success' : 'info'"
+                :effect="stage.pendingRework ? 'dark' : 'plain'"
+              >
+                {{ stage.label }}{{ stage.pendingRework ? '返' : stage.done ? '✓' : '…' }}
+              </el-tag>
+            </el-tooltip>
           </template>
         </el-table-column>
         <el-table-column label="推进比" width="180">
           <template #default="scope">
             <el-progress :percentage="scope.row.ratio" :status="scope.row.ratio === 100 ? 'success' : undefined" />
+          </template>
+        </el-table-column>
+        <el-table-column label="返工状态" width="180">
+          <template #default="scope">
+            <el-tag v-if="scope.row.pendingReworkCount" type="danger" size="small" effect="plain">
+              待复核 {{ scope.row.pendingReworkCount }} 单
+            </el-tag>
+            <el-tag v-else type="success" size="small">未返工</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="缺失项" min-width="160">
@@ -180,6 +216,10 @@ const events = computed<TimelineEvent[]>(() => {
 }
 .stat-row {
   margin-bottom: 12px;
+}
+.rework-alert {
+  margin-bottom: 12px;
+  border-radius: 8px;
 }
 .stat-row .el-col {
   margin-bottom: 12px;

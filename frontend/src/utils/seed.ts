@@ -3,6 +3,7 @@ import type { WoodBoard } from '../types/wood-board';
 import type { SoundChamber } from '../types/sound-chamber';
 import type { LacquerLayer } from '../types/lacquer-layer';
 import type { Stringing } from '../types/stringing';
+import type { ReworkOrder } from '../types/rework';
 import { cumulativeThickness } from './layer';
 
 const DAY = 86_400_000;
@@ -130,6 +131,31 @@ export const SEED_STRINGINGS: Stringing[] = [
   },
 ];
 
+/** 示例返工单：Q-2502 灰胎第 3 遍返砂，待复核（上弦页对该琴暂不接受评价） */
+export function buildSeedReworks(layers: LacquerLayer[]): ReworkOrder[] {
+  const layer = layers.find((l) => l.id === 'layer-006');
+  if (!layer) return [];
+  return [
+    {
+      id: 'rework-001',
+      orderNo: `RW-${new Date(layer.appliedAt).getFullYear()}-001`,
+      guqinNo: 'Q-2502',
+      stage: 'lacquer',
+      responsible: '周砚秋',
+      reason: '第 3 遍打磨后局部返砂，需补灰重磨',
+      snapshot: { stage: 'lacquer', takenAt: daysAgo(20), record: layer },
+      ref: {
+        refType: 'lacquer',
+        refId: layer.id,
+        refLabel: `髹漆第 ${layer.seq} 遍 · ${layer.appliedAt.slice(0, 10)}`,
+      },
+      status: 'pending',
+      registeredAt: daysAgo(20),
+      registrar: '档案员',
+    },
+  ];
+}
+
 /** 首次打开（表内无数据）时写入示例数据；已有数据则不动 */
 export async function seedIfEmpty(): Promise<void> {
   const flag = await db.meta.get('seeded');
@@ -143,12 +169,18 @@ export async function seedIfEmpty(): Promise<void> {
     db.stringings.count(),
   ]);
   const layers = withCumulative(buildSeedLayers());
+  const reworks = buildSeedReworks(layers);
 
-  await db.transaction('rw', db.boards, db.chambers, db.lacquers, db.stringings, db.meta, async () => {
-    if (boardCount === 0) await db.boards.bulkPut(SEED_BOARDS);
-    if (chamberCount === 0) await db.chambers.bulkPut(SEED_CHAMBERS);
-    if (lacquerCount === 0) await db.lacquers.bulkPut(layers);
-    if (stringingCount === 0) await db.stringings.bulkPut(SEED_STRINGINGS);
-    await db.meta.put({ key: 'seeded', value: new Date().toISOString() });
-  });
+  await db.transaction(
+    'rw',
+    [db.boards, db.chambers, db.lacquers, db.stringings, db.reworks, db.meta],
+    async () => {
+      if (boardCount === 0) await db.boards.bulkPut(SEED_BOARDS);
+      if (chamberCount === 0) await db.chambers.bulkPut(SEED_CHAMBERS);
+      if (lacquerCount === 0) await db.lacquers.bulkPut(layers);
+      if (stringingCount === 0) await db.stringings.bulkPut(SEED_STRINGINGS);
+      if (reworks.length) await db.reworks.bulkPut(reworks);
+      await db.meta.put({ key: 'seeded', value: new Date().toISOString() });
+    },
+  );
 }

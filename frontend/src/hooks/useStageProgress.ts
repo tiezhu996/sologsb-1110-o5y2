@@ -3,7 +3,9 @@ import { useBoardStore } from '../stores/boardStore';
 import { useChamberStore } from '../stores/chamberStore';
 import { useLacquerStore } from '../stores/lacquerStore';
 import { useStringingStore } from '../stores/stringingStore';
+import { useReworkStore } from '../stores/reworkStore';
 import { cumulativeThickness } from '../utils/layer';
+import type { ReworkStage } from '../types/rework';
 
 export type StageKey = 'select' | 'carve' | 'lacquer' | 'string';
 
@@ -12,6 +14,8 @@ export interface StageItem {
   label: string;
   done: boolean;
   detail: string;
+  /** 该工序是否存在待复核返工 */
+  pendingRework: boolean;
 }
 
 export interface StageProgress {
@@ -23,6 +27,10 @@ export interface StageProgress {
   /** 缺失项 */
   missing: string[];
   cumulativeMm: number;
+  /** 待复核返工单数 */
+  pendingReworkCount: number;
+  /** 有待复核返工的工序 */
+  pendingStages: StageKey[];
 }
 
 export const STAGE_LABELS: Record<StageKey, string> = {
@@ -38,12 +46,14 @@ const TARGET_MM = 1.0;
 /**
  * 按选材/掏膛/灰胎/上弦计算每张琴的阶段推进比与缺失项。
  * 选材：面板与底板配对齐全；掏膛：有槽腹记录；灰胎：累计厚度达标；上弦：有上弦记录。
+ * 有待复核返工时，对应工序阶段标记返工待核。
  */
 export function useStageProgress() {
   const boardStore = useBoardStore();
   const chamberStore = useChamberStore();
   const lacquerStore = useLacquerStore();
   const stringingStore = useStringingStore();
+  const reworkStore = useReworkStore();
 
   const guqinNos = computed(() => {
     const set = new Set<string>();
@@ -51,6 +61,7 @@ export function useStageProgress() {
     chamberStore.chambers.forEach((c) => set.add(c.guqinNo));
     lacquerStore.layers.forEach((l) => set.add(l.guqinNo));
     stringingStore.stringings.forEach((s) => set.add(s.guqinNo));
+    reworkStore.reworks.forEach((r) => set.add(r.guqinNo));
     return Array.from(set).sort();
   });
 
@@ -64,6 +75,8 @@ export function useStageProgress() {
       const total = cumulativeThickness(layers);
       const stringing = stringingStore.stringings.find((s) => s.guqinNo === guqinNo);
       const species = panel?.species ?? base?.species ?? '';
+      const pendingReworks = reworkStore.pendingOf(guqinNo);
+      const pendingSet = new Set<StageKey>(pendingReworks.map((r) => r.stage as ReworkStage));
 
       const stages: StageItem[] = [
         {
@@ -71,24 +84,28 @@ export function useStageProgress() {
           label: STAGE_LABELS.select,
           done: Boolean(panel && base),
           detail: panel && base ? `${panel.species}面板 + ${base.species}底板，阴干 ${Math.max(panel.dryYears, base.dryYears)} 年` : '面板或底板缺失',
+          pendingRework: pendingSet.has('select'),
         },
         {
           key: 'carve',
           label: STAGE_LABELS.carve,
           done: Boolean(chamber),
           detail: chamber ? `槽腹 ${chamber.chamberDepth}mm，纳音 ${chamber.nayinThickness}mm` : '尚未掏膛',
+          pendingRework: pendingSet.has('carve'),
         },
         {
           key: 'lacquer',
           label: STAGE_LABELS.lacquer,
           done: total >= TARGET_MM,
           detail: layers.length ? `${layers.length} 遍，累计 ${total.toFixed(2)}mm / 目标 ${TARGET_MM}mm` : '尚未髹漆',
+          pendingRework: pendingSet.has('lacquer'),
         },
         {
           key: 'string',
           label: STAGE_LABELS.string,
           done: Boolean(stringing),
           detail: stringing ? `${stringing.stringType}，弦距 ${stringing.stringGap}mm` : '尚未上弦',
+          pendingRework: pendingSet.has('string'),
         },
       ];
 
@@ -100,6 +117,8 @@ export function useStageProgress() {
         ratio: Math.round((doneCount / stages.length) * 100),
         missing: stages.filter((s) => !s.done).map((s) => s.label),
         cumulativeMm: Number(total.toFixed(2)),
+        pendingReworkCount: pendingReworks.length,
+        pendingStages: stages.filter((s) => s.pendingRework).map((s) => s.key),
       };
     }),
   );
@@ -117,6 +136,8 @@ export function useStageProgress() {
       total: progressList.value.length,
       completed: progressList.value.filter((item) => item.ratio === 100).length,
       averageRatio: Math.round(progressList.value.reduce((sum, item) => sum + item.ratio, 0) / total),
+      pendingRework: progressList.value.reduce((sum, item) => sum + item.pendingReworkCount, 0),
+      guqinWithPending: progressList.value.filter((item) => item.pendingReworkCount > 0).length,
     };
   });
 
