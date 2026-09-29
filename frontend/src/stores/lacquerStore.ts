@@ -93,6 +93,13 @@ export const useLacquerStore = defineStore('lacquer', {
 
     async removeLayer(id: string) {
       const current = this.layers.find((l) => l.id === id);
+      if (current) {
+        // 已被返工单关联（任何状态）的髹漆遍次不能删，否则返工原值快照失去关联出处
+        const linked = await db.reworks.where('linkedId').equals(id).first();
+        if (linked) {
+          throw new Error(`该髹漆遍次已关联返工单 ${linked.orderNo}，不能删除`);
+        }
+      }
       await db.lacquers.delete(id);
       const rest = this.layers.filter((l) => l.id !== id);
       if (!current) {

@@ -63,3 +63,11 @@ export function formatDate(value: Date | string): string {
 export function todayStr(): string {
   return formatDate(new Date());
 }
+
+/** 日期 + 时分（返工单登记 / 确认 / 复核时间用） */
+export function formatDateTime(value: Date | string): string {
+  const d = typeof value === 'string' ? new Date(value) : value;
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${formatDate(d)} ${hh}:${mm}`;
+}

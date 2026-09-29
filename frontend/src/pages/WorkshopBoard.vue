@@ -8,15 +8,18 @@ import { useStageProgress, STAGE_LABELS, type StageKey } from '../hooks/useStage
 import { useBoardStore } from '../stores/boardStore';
 import { useChamberStore } from '../stores/chamberStore';
 import { useLacquerStore } from '../stores/lacquerStore';
+import { useReworkStore } from '../stores/reworkStore';
 import { useStringingStore } from '../stores/stringingStore';
-import { formatDate } from '../utils/layer';
+import { formatDate, formatDateTime } from '../utils/layer';
 import { WOOD_SPECIES } from '../types/wood-board';
+import { REWORK_STAGE_LABELS, type ReworkOrder } from '../types/rework';
 import type { TimelineEvent } from '../types/ui';
 
 const route = useRoute();
 const boardStore = useBoardStore();
 const chamberStore = useChamberStore();
 const lacquerStore = useLacquerStore();
+const reworkStore = useReworkStore();
 const stringingStore = useStringingStore();
 const { progressList, summary } = useStageProgress();
 
@@ -44,6 +47,9 @@ const stageBadges = computed(() =>
 
 const pendingString = computed(() => progressList.value.filter((item) => !item.stages.find((s) => s.key === 'string')?.done).length);
 
+/** 有待复核返工的琴坯数（一张琴多单也只计一张） */
+const pendingReworkGuqins = computed(() => progressList.value.filter((item) => item.pendingReworks > 0).length);
+
 const events = computed<TimelineEvent[]>(() => {
   const list: TimelineEvent[] = [];
   chamberStore.chambers.forEach((chamber) => {
@@ -70,6 +76,24 @@ const events = computed<TimelineEvent[]>(() => {
       type: 'success',
     });
   });
+  reworkStore.reworks.forEach((order) => {
+    if (order.confirmedAt) {
+      list.push({
+        label: `返工待复核 · ${order.guqinNo}`,
+        at: formatDateTime(order.confirmedAt),
+        text: `${order.orderNo}，${REWORK_STAGE_LABELS[order.stage]}返工（${order.linkedLabel}），责任师傅 ${order.master}${order.issue ? `，${order.issue}` : ''}`,
+        type: 'danger',
+      });
+    }
+    if (order.reviewedAt) {
+      list.push({
+        label: `返工复核完成 · ${order.guqinNo}`,
+        at: formatDateTime(order.reviewedAt),
+        text: `${order.orderNo}，复核人 ${order.reviewer}：${order.conclusion}`,
+        type: 'info',
+      });
+    }
+  });
   return list.sort((a, b) => b.at.localeCompare(a.at)).slice(0, 8);
 });
 </script>
@@ -83,17 +107,23 @@ const events = computed<TimelineEvent[]>(() => {
     </p>
 
     <el-row :gutter="12" class="stat-row">
-      <el-col :xs="12" :md="6">
+      <el-col :xs="12" :md="4" :xl="3">
         <StatBadge label="在制琴坯" :value="progressList.length" unit="张" />
       </el-col>
-      <el-col :xs="12" :md="6">
+      <el-col :xs="12" :md="4" :xl="3">
         <StatBadge label="四阶段完成" :value="summary.completed" unit="张" status="success" />
       </el-col>
-      <el-col :xs="12" :md="6">
+      <el-col :xs="12" :md="4" :xl="3">
         <StatBadge label="平均推进比" :value="summary.averageRatio" unit="%" status="warning" />
       </el-col>
-      <el-col :xs="12" :md="6">
+      <el-col :xs="12" :md="4" :xl="3">
         <StatBadge label="待上弦" :value="pendingString" unit="张" :status="pendingString ? 'danger' : 'success'" />
+      </el-col>
+      <el-col :xs="12" :md="4" :xl="3">
+        <StatBadge label="待复核返工" :value="reworkStore.pendingTotal" unit="单" :status="reworkStore.pendingTotal ? 'danger' : 'success'" />
+      </el-col>
+      <el-col :xs="12" :md="4" :xl="3">
+        <StatBadge label="返工涉及琴坯" :value="pendingReworkGuqins" unit="张" :status="pendingReworkGuqins ? 'warning' : 'success'" />
       </el-col>
     </el-row>
 
@@ -101,7 +131,10 @@ const events = computed<TimelineEvent[]>(() => {
       <template #header>
         <div class="card-head">
           <span>阶段统计（已完成琴坯数）</span>
-          <span class="card-note">板材 {{ boardStore.boards.length }} 块（可用 {{ boardStore.usableCount }} 块）· 髹漆 {{ lacquerStore.layers.length }} 遍 · 荫房异常 {{ lacquerStore.outOfRangeCount }} 遍</span>
+          <span class="card-note">
+            板材 {{ boardStore.boards.length }} 块（可用 {{ boardStore.usableCount }} 块）· 髹漆 {{ lacquerStore.layers.length }} 遍 ·
+            荫房异常 {{ lacquerStore.outOfRangeCount }} 遍 · 返工 {{ reworkStore.reworks.length }} 单（待复核 {{ reworkStore.pendingTotal }}）
+          </span>
         </div>
       </template>
       <el-row :gutter="12">
@@ -154,6 +187,31 @@ const events = computed<TimelineEvent[]>(() => {
             <el-tag v-else type="success" size="small">齐备</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="返工状态" width="150">
+          <template #default="scope">
+            <el-tooltip
+              v-if="scope.row.pendingReworks"
+              :content="scope.row.reworkOrders.filter((o: ReworkOrder) => o.status === 'pending').map((o: ReworkOrder) => o.orderNo).join('、')"
+              placement="top"
+            >
+              <el-tag type="danger" size="small" class="rework-tag">待复核×{{ scope.row.pendingReworks }}</el-tag>
+            </el-tooltip>
+            <el-tooltip
+              v-if="scope.row.completedReworks"
+              :content="scope.row.reworkOrders.filter((o: ReworkOrder) => o.status === 'completed').map((o: ReworkOrder) => o.orderNo).join('、')"
+              placement="top"
+            >
+              <el-tag type="success" size="small" class="rework-tag">已完成×{{ scope.row.completedReworks }}</el-tag>
+            </el-tooltip>
+            <el-tag
+              v-if="scope.row.reworkOrders.some((o: ReworkOrder) => o.status === 'draft')"
+              type="info"
+              size="small"
+              class="rework-tag"
+            >草稿</el-tag>
+            <el-tag v-if="scope.row.reworkOrders.length === 0" type="success" size="small" effect="plain">未返工</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="累计灰胎(mm)" width="120">
           <template #default="scope">{{ scope.row.cumulativeMm.toFixed(2) }}</template>
         </el-table-column>
@@ -199,6 +257,10 @@ const events = computed<TimelineEvent[]>(() => {
 }
 .stage-tag {
   margin-right: 6px;
+}
+.rework-tag {
+  margin-right: 4px;
+  margin-bottom: 2px;
 }
 .missing {
   color: #c62828;

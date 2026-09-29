@@ -3,6 +3,7 @@ import type { WoodBoard } from '../types/wood-board';
 import type { SoundChamber } from '../types/sound-chamber';
 import type { LacquerLayer } from '../types/lacquer-layer';
 import type { Stringing } from '../types/stringing';
+import type { ReworkOrder } from '../types/rework';
 import { cumulativeThickness } from './layer';
 
 const DAY = 86_400_000;
@@ -130,25 +131,76 @@ export const SEED_STRINGINGS: Stringing[] = [
   },
 ];
 
+/**
+ * 示例返工单：
+ * - Q-2502 髹漆第 1 遍（layer-004）返工已完成：当时荫房温度偏低，复核人已填结论；
+ * - Q-2501 上弦记录（stringing-001）返工待复核：七弦略紧，复核完成前上弦页拒收评价。
+ * 快照直接取示例记录本身（新库首次写入，内容即原值）。
+ */
+export function buildSeedReworks(layers: LacquerLayer[], stringings: Stringing[]): ReworkOrder[] {
+  const layer = layers.find((l) => l.id === 'layer-004');
+  const stringing = stringings.find((s) => s.id === 'stringing-001');
+  if (!layer || !stringing) return [];
+  return [
+    {
+      id: 'rework-001',
+      orderNo: 'FG-202608-001',
+      guqinNo: 'Q-2502',
+      stage: 'lacquer',
+      master: '林听雪',
+      issue: '荫房温度偏低致首遍灰胎发皱，起磨后补一遍',
+      status: 'completed',
+      linkedId: layer.id,
+      linkedLabel: `髹漆第 ${layer.seq} 遍`,
+      snapshot: { stage: 'lacquer', layer: JSON.parse(JSON.stringify(layer)) },
+      createdAt: daysAgo(26),
+      confirmedAt: daysAgo(25),
+      reviewer: '周砚秋',
+      conclusion: '补髹第 4 遍后表面平整，累计厚度达标，同意转上弦。',
+      reviewedAt: daysAgo(20),
+    },
+    {
+      id: 'rework-002',
+      orderNo: 'FG-202609-001',
+      guqinNo: 'Q-2501',
+      stage: 'string',
+      master: '周砚秋',
+      issue: '七弦略紧需再养，待复核琴面手感与散音松紧',
+      status: 'pending',
+      linkedId: stringing.id,
+      linkedLabel: '上弦记录',
+      snapshot: { stage: 'string', stringing: JSON.parse(JSON.stringify(stringing)) },
+      createdAt: daysAgo(4),
+      confirmedAt: daysAgo(2),
+    },
+  ];
+}
+
 /** 首次打开（表内无数据）时写入示例数据；已有数据则不动 */
-export async function seedIfEmpty(): Promise<void> {
-  const flag = await db.meta.get('seeded');
+export async function seedIfEmpty(): Promise<void> {  const flag = await db.meta.get('seeded');
   if (flag) {
     return;
   }
-  const [boardCount, chamberCount, lacquerCount, stringingCount] = await Promise.all([
+  const [boardCount, chamberCount, lacquerCount, stringingCount, reworkCount] = await Promise.all([
     db.boards.count(),
     db.chambers.count(),
     db.lacquers.count(),
     db.stringings.count(),
+    db.reworks.count(),
   ]);
   const layers = withCumulative(buildSeedLayers());
+  const reworks = buildSeedReworks(layers, SEED_STRINGINGS);
 
-  await db.transaction('rw', db.boards, db.chambers, db.lacquers, db.stringings, db.meta, async () => {
-    if (boardCount === 0) await db.boards.bulkPut(SEED_BOARDS);
-    if (chamberCount === 0) await db.chambers.bulkPut(SEED_CHAMBERS);
-    if (lacquerCount === 0) await db.lacquers.bulkPut(layers);
-    if (stringingCount === 0) await db.stringings.bulkPut(SEED_STRINGINGS);
-    await db.meta.put({ key: 'seeded', value: new Date().toISOString() });
-  });
+  await db.transaction(
+    'rw',
+    [db.boards, db.chambers, db.lacquers, db.stringings, db.reworks, db.meta],
+    async () => {
+      if (boardCount === 0) await db.boards.bulkPut(SEED_BOARDS);
+      if (chamberCount === 0) await db.chambers.bulkPut(SEED_CHAMBERS);
+      if (lacquerCount === 0) await db.lacquers.bulkPut(layers);
+      if (stringingCount === 0) await db.stringings.bulkPut(SEED_STRINGINGS);
+      if (reworkCount === 0) await db.reworks.bulkPut(reworks);
+      await db.meta.put({ key: 'seeded', value: new Date().toISOString() });
+    },
+  );
 }

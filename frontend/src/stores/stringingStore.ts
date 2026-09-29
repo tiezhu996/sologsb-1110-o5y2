@@ -3,6 +3,7 @@ import { db } from '../utils/db';
 import { uid } from '../utils/id';
 import { toPlain } from '../utils/plain';
 import type { StringDefect, StringType, Stringing, ToneVersion } from '../types/stringing';
+import type { ReworkOrder } from '../types/rework';
 
 export interface StringingInput {
   guqinNo: string;
@@ -57,10 +58,23 @@ export const useStringingStore = defineStore('stringing', {
       this.hydrated = true;
     },
 
+    /** 存在待复核返工时不接受评价（与落库同一事务校验，避免并发漏判） */
+    async assertNoPendingRework(guqinNo: string): Promise<void> {
+      const blocked = await db.reworks
+        .where('guqinNo')
+        .equals(guqinNo)
+        .filter((r: ReworkOrder) => r.status === 'pending')
+        .first();
+      if (blocked) {
+        throw new Error(`琴号 ${guqinNo} 存在待复核返工（${blocked.orderNo}），复核完成前不接受上弦评价`);
+      }
+    },
+
     async addStringing(input: StringingInput): Promise<Stringing> {
+      const guqinNo = input.guqinNo.trim();
       const stringing: Stringing = {
         id: uid('stringing'),
-        guqinNo: input.guqinNo.trim(),
+        guqinNo,
         stringType: input.stringType,
         nut: input.nut.trim(),
         stringGap: Number(input.stringGap) || 0,
@@ -73,7 +87,10 @@ export const useStringingStore = defineStore('stringing', {
         operator: input.operator.trim(),
         noteVersions: [],
       };
-      await db.stringings.put(toPlain(stringing));
+      await db.transaction('rw', db.stringings, db.reworks, async () => {
+        await this.assertNoPendingRework(guqinNo);
+        await db.stringings.put(toPlain(stringing));
+      });
       this.stringings = [stringing, ...this.stringings];
       return stringing;
     },
@@ -116,11 +133,22 @@ export const useStringingStore = defineStore('stringing', {
         operator: patch.operator?.trim() ?? current.operator,
         noteVersions: versions,
       };
-      await db.stringings.put(toPlain(next));
+      await db.transaction('rw', db.stringings, db.reworks, async () => {
+        await this.assertNoPendingRework(next.guqinNo);
+        await db.stringings.put(toPlain(next));
+      });
       this.stringings = this.stringings.map((s) => (s.id === id ? next : s));
     },
 
     async removeStringing(id: string) {
+      const current = this.stringings.find((s) => s.id === id);
+      if (current) {
+        // 已被返工单关联（任何状态）的上弦记录不能删，否则返工原值快照失去关联出处
+        const linked = await db.reworks.where('linkedId').equals(id).first();
+        if (linked) {
+          throw new Error(`该上弦记录已关联返工单 ${linked.orderNo}，不能删除`);
+        }
+      }
       await db.stringings.delete(id);
       this.stringings = this.stringings.filter((s) => s.id !== id);
     },

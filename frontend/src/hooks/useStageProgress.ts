@@ -3,7 +3,9 @@ import { useBoardStore } from '../stores/boardStore';
 import { useChamberStore } from '../stores/chamberStore';
 import { useLacquerStore } from '../stores/lacquerStore';
 import { useStringingStore } from '../stores/stringingStore';
+import { useReworkStore } from '../stores/reworkStore';
 import { cumulativeThickness } from '../utils/layer';
+import type { ReworkOrder } from '../types/rework';
 
 export type StageKey = 'select' | 'carve' | 'lacquer' | 'string';
 
@@ -23,6 +25,12 @@ export interface StageProgress {
   /** 缺失项 */
   missing: string[];
   cumulativeMm: number;
+  /** 待复核返工单数（进度表据此显示待复核） */
+  pendingReworks: number;
+  /** 已完成返工单数 */
+  completedReworks: number;
+  /** 该琴全部返工单 */
+  reworkOrders: ReworkOrder[];
 }
 
 export const STAGE_LABELS: Record<StageKey, string> = {
@@ -44,6 +52,7 @@ export function useStageProgress() {
   const chamberStore = useChamberStore();
   const lacquerStore = useLacquerStore();
   const stringingStore = useStringingStore();
+  const reworkStore = useReworkStore();
 
   const guqinNos = computed(() => {
     const set = new Set<string>();
@@ -51,6 +60,7 @@ export function useStageProgress() {
     chamberStore.chambers.forEach((c) => set.add(c.guqinNo));
     lacquerStore.layers.forEach((l) => set.add(l.guqinNo));
     stringingStore.stringings.forEach((s) => set.add(s.guqinNo));
+    reworkStore.reworks.forEach((r) => set.add(r.guqinNo));
     return Array.from(set).sort();
   });
 
@@ -64,6 +74,7 @@ export function useStageProgress() {
       const total = cumulativeThickness(layers);
       const stringing = stringingStore.stringings.find((s) => s.guqinNo === guqinNo);
       const species = panel?.species ?? base?.species ?? '';
+      const reworkOrders = reworkStore.ordersOf(guqinNo);
 
       const stages: StageItem[] = [
         {
@@ -100,6 +111,9 @@ export function useStageProgress() {
         ratio: Math.round((doneCount / stages.length) * 100),
         missing: stages.filter((s) => !s.done).map((s) => s.label),
         cumulativeMm: Number(total.toFixed(2)),
+        pendingReworks: reworkOrders.filter((r) => r.status === 'pending').length,
+        completedReworks: reworkOrders.filter((r) => r.status === 'completed').length,
+        reworkOrders,
       };
     }),
   );

@@ -8,15 +8,18 @@ export interface BackupPayload {
   chambers: unknown[];
   lacquers: unknown[];
   stringings: unknown[];
+  /** v3 起追加；旧版本备份没有此字段，恢复时现有返工关联原样保留 */
+  reworks?: unknown[];
 }
 
 /** 汇总全部本地表为 JSON 备份（schema 迁移前先导出） */
 export async function buildBackup(): Promise<BackupPayload> {
-  const [boards, chambers, lacquers, stringings] = await Promise.all([
+  const [boards, chambers, lacquers, stringings, reworks] = await Promise.all([
     db.boards.toArray(),
     db.chambers.toArray(),
     db.lacquers.toArray(),
     db.stringings.toArray(),
+    db.reworks.toArray(),
   ]);
   return {
     app: 'gbguqin',
@@ -26,6 +29,7 @@ export async function buildBackup(): Promise<BackupPayload> {
     chambers,
     lacquers,
     stringings,
+    reworks,
   };
 }
 
@@ -55,27 +59,46 @@ export function downloadCsv<T extends Record<string, unknown>>(
   const body = rows
     .map((row) => columns.map((c) => `"${String(row[c.key] ?? '').replace(/"/g, '""')}"`).join(','))
     .join('\n');
-  downloadText(filename, `\ufeff${header}\n${body}`, 'text/csv');
+  downloadText(filename, `﻿${header}\n${body}`, 'text/csv');
 }
 
-/** 恢复 JSON 备份 */
-export async function importBackup(text: string): Promise<{ boards: number; chambers: number; lacquers: number; stringings: number }> {
+export interface ImportCounts {
+  boards: number;
+  chambers: number;
+  lacquers: number;
+  stringings: number;
+  reworks: number | null;
+}
+
+/**
+ * 恢复 JSON 备份。
+ * 旧备份没有 reworks 字段：四张原表照常恢复打开，全部按未返工处理；
+ * 当前库中已有的返工关联不在恢复事务内触碰，避免被覆盖。
+ * 新备份带 reworks（含空数组）：整表替换为备份内容。
+ */
+export async function importBackup(text: string): Promise<ImportCounts> {
   const payload = JSON.parse(text) as Partial<BackupPayload>;
   if (!payload || payload.app !== 'gbguqin') {
     throw new Error('备份文件格式不匹配（缺少 app=gbguqin 标记）');
   }
-  const counts = {
+  const counts: ImportCounts = {
     boards: payload.boards?.length ?? 0,
     chambers: payload.chambers?.length ?? 0,
     lacquers: payload.lacquers?.length ?? 0,
     stringings: payload.stringings?.length ?? 0,
+    reworks: payload.reworks ? payload.reworks.length : null,
   };
-  await db.transaction('rw', db.boards, db.chambers, db.lacquers, db.stringings, async () => {
+  await db.transaction('rw', db.boards, db.chambers, db.lacquers, db.stringings, db.reworks, async () => {
     await Promise.all([db.boards.clear(), db.chambers.clear(), db.lacquers.clear(), db.stringings.clear()]);
     if (payload.boards?.length) await db.boards.bulkPut(payload.boards as never[]);
     if (payload.chambers?.length) await db.chambers.bulkPut(payload.chambers as never[]);
     if (payload.lacquers?.length) await db.lacquers.bulkPut(payload.lacquers as never[]);
     if (payload.stringings?.length) await db.stringings.bulkPut(payload.stringings as never[]);
+    // 仅当备份显式带 reworks（新备份）才替换；旧备份缺字段，现有返工关联保留不覆盖
+    if (payload.reworks) {
+      await db.reworks.clear();
+      if (payload.reworks.length) await db.reworks.bulkPut(payload.reworks as never[]);
+    }
   });
   return counts;
 }

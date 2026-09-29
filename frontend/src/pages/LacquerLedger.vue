@@ -119,8 +119,12 @@ async function remove(layer: LacquerLayer) {
     .then(() => true)
     .catch(() => false);
   if (!confirmed) return;
-  await lacquerStore.removeLayer(layer.id);
-  ElMessage.success('已删除并重算累计厚度');
+  try {
+    await lacquerStore.removeLayer(layer.id);
+    ElMessage.success('已删除并重算累计厚度');
+  } catch (error) {
+    ElMessage.error((error as Error).message);
+  }
 }
 </script>
 

@@ -24,8 +24,8 @@ docker compose down
 | 框架 | Vue 3 + TypeScript（`<script setup>`） |
 | 构建 | Vite 6（`npm run build` 含 `vue-tsc --noEmit` 类型检查） |
 | UI | Element Plus 2 |
-| 路由 | Vue Router 4（5 条业务路由 + 404） |
-| 状态 | Pinia（boardStore / chamberStore / lacquerStore / stringingStore） |
+| 路由 | Vue Router 4（6 条业务路由 + 404） |
+| 状态 | Pinia（boardStore / chamberStore / lacquerStore / reworkStore / stringingStore） |
 | 存储 | IndexedDB（Dexie，库名 `gbguqin-db`） |
 | 托管 | nginx:alpine（多阶段构建，SPA try_files + gzip） |
 
@@ -36,6 +36,7 @@ cd frontend
 npm install
 npm run dev      # http://localhost:21810
 npm run build    # 类型检查 + 生产构建
+npm test         # 返工单数据层规则 + 旧库升级测试（fake-indexeddb，无需浏览器）
 ```
 
 ## 目录结构
@@ -49,12 +50,13 @@ npm run build    # 类型检查 + 生产构建
 │   ├── nginx.conf             # try_files SPA 回退 + gzip
 │   ├── public/favicon.svg
 │   └── src/
-│       ├── types/             # wood-board / sound-chamber / lacquer-layer / stringing（+ ui.ts）
-│       ├── stores/            # boardStore / chamberStore / lacquerStore / stringingStore
-│       ├── components/common/ # DimensionChart / LayerStack / ToneTextEditor / FilterBar / StatBadge / ProcessTimeline / EmptyPanel
+│       ├── types/             # wood-board / sound-chamber / lacquer-layer / stringing / rework（+ ui.ts）
+│       ├── stores/            # boardStore / chamberStore / lacquerStore / reworkStore / stringingStore
+│       ├── components/common/ # DimensionChart / LayerStack / ToneTextEditor / ReworkSnapshotView / FilterBar / StatBadge / ProcessTimeline / EmptyPanel
 │       ├── hooks/             # useGuqinFilter / useStageProgress
-│       ├── pages/             # WorkshopBoard / BoardList / ChamberEditor / LacquerLedger / StringingLog（+ NotFound）
+│       ├── pages/             # WorkshopBoard / BoardList / ChamberEditor / LacquerLedger / ReworkLedger / StringingLog（+ NotFound）
 │       ├── router/index.ts    # 路由表
+│       ├── scripts/           # rework.test.ts（返工规则）/ db-upgrade.test.ts（v2→v3 升级）
 │       └── utils/             # layer.ts / db.ts / export.ts（+ wood.ts / seed.ts / id.ts）
 ```
 
@@ -62,15 +64,26 @@ npm run build    # 类型检查 + 生产构建
 
 | 路由 | 页面 | 说明 |
 | --- | --- | --- |
-| `/` | 琴坯进度 | 选材/掏膛/灰胎/上弦四阶段统计、推进比、缺失项与工序动态 |
+| `/` | 琴坯进度 | 选材/掏膛/灰胎/上弦四阶段统计、推进比、缺失项、待复核返工与工序动态 |
 | `/boards` | 板材登记与配对 | 面板底板配对、含水率回显、厚度差、槽腹剖面标注 |
 | `/chambers` | 槽腹尺寸记录 | 纳音/龙池/凤沼三处厚度、槽腹深度、天地柱与龙池凤沼尺寸，SVG 剖面标注 |
 | `/lacquer` | 灰胎髹漆遍次 | 按遍次累加厚度、荫房温湿度窗口校验、层积条与养护天数 |
-| `/stringing` | 上弦与音色评价 | 散音/按音/泛音三段纯文本评语、九德简述、缺陷标记与版本对照 |
+| `/reworks` | 返工处置单 | 选琴号/问题工序/责任师傅登记；确认留原值快照、进度表待复核；复核结论后锁定 |
+| `/stringing` | 上弦与音色评价 | 三段纯文本评语、九德简述、缺陷标记与版本对照；有待复核返工时拒收评价 |
+
+## 返工处置单规则
+
+- **登记**：选择琴号、问题工序（髹漆 / 上弦）与责任师傅，先存为**草稿**；草稿可继续修改或删除。
+- **确认**：在单个 IndexedDB 读写事务内读取关联的髹漆遍次或上弦记录，固化整份**原值快照**并置为**待复核**；关联记录不存在、重复关联或落库任一步失败时事务整体回滚，不留半套档案。
+- **进度表**：待复核返工在琴坯进度页以红色标签标出，工序动态同步显示。
+- **上弦页拒收**：琴号存在待复核返工时，上弦页不接受该琴新增或编辑评价（页面拦截 + 落库事务内硬校验双重保障）。
+- **复核完成**：复核人填写结论后返工单才完成并锁定归档；仅已完成的返工单不可删除。
+- **关联保护**：髹漆遍次 / 上弦记录一旦被返工单关联（任何状态）不可删除，保证快照出处不丢。
+- **旧备份兼容**：旧备份 JSON 没有 `reworks` 字段，恢复后四张原表照常打开并按未返工处理；当前库已有的返工关联不在恢复事务内触碰，不会被覆盖。
 
 ## 数据存储说明
 
-- 全部数据存于浏览器 IndexedDB（Dexie，库名 `gbguqin-db`），表：`boards`、`chambers`、`lacquers`、`stringings`、`meta`。
-- `db.version(1)` 建表声明索引；`db.version(2).upgrade(...)` 为髹漆表增加 `[guqinNo+seq]` 复合索引并回填历史厚度。升级前可用顶栏「导出备份」导出全量 JSON。
-- 首次打开且表为空时写入一批示例工序档案（`src/utils/seed.ts`）。
+- 全部数据存于浏览器 IndexedDB（Dexie，库名 `gbguqin-db`），表：`boards`、`chambers`、`lacquers`、`stringings`、`reworks`、`meta`。
+- `db.version(1)` 建表声明索引；`db.version(2).upgrade(...)` 为髹漆表增加 `[guqinNo+seq]` 复合索引并回填历史厚度；`db.version(3)` 新增 `reworks` 返工处置单表（自动建表，原数据不动）。升级前可用顶栏「导出备份」导出全量 JSON。
+- 首次打开且表为空时写入一批示例工序档案（`src/utils/seed.ts`，含两张示范返工单：一张已完成、一张待复核）。
 - 容器无状态：不使用数据库服务、不挂载命名卷，`docker compose down` 后数据仍留在浏览器中。

@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
-    "preview": "vite preview --port 21810"
+    "preview": "vite preview --port 21810",
+    "test": "tsx scripts/rework.test.ts && tsx scripts/db-upgrade.test.ts",
+    "test:rework": "tsx scripts/rework.test.ts",
+    "test:upgrade": "tsx scripts/db-upgrade.test.ts"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
@@ -19,6 +22,8 @@
   "devDependencies": {
     "@types/node": "^22.10.5",
     "@vitejs/plugin-vue": "^5.2.1",
+    "fake-indexeddb": "^6.0.0",
+    "tsx": "^4.19.2",
     "typescript": "~5.7.3",
     "vite": "^6.1.0",
     "vue-tsc": "^2.2.0"

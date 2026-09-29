@@ -7,6 +7,7 @@ import EmptyPanel from '../components/common/EmptyPanel.vue';
 import ToneTextEditor from '../components/common/ToneTextEditor.vue';
 import { useStringingStore } from '../stores/stringingStore';
 import { useBoardStore } from '../stores/boardStore';
+import { useReworkStore } from '../stores/reworkStore';
 import { formatDate } from '../utils/layer';
 import {
   NINE_VIRTUES,
@@ -21,6 +22,7 @@ import {
 const route = useRoute();
 const stringingStore = useStringingStore();
 const boardStore = useBoardStore();
+const reworkStore = useReworkStore();
 
 const dialogVisible = ref(false);
 const editingId = ref('');
@@ -67,10 +69,17 @@ const visible = computed(() =>
 
 const editingVersions = computed(() => (editingId.value ? stringingStore.stringings.find((s) => s.id === editingId.value)?.noteVersions ?? [] : []));
 
+/** 当前弹窗所选琴号是否存在待复核返工（存在则上弦页不接受评价） */
+const selectedBlocked = computed(() => reworkStore.hasPending(form.value.guqinNo));
+
+/** 页头提示：当前所有待复核返工涉及的琴号 */
+const blockedGuqinNos = computed(() => Array.from(new Set(reworkStore.pendingOrders.map((o) => o.guqinNo))).sort());
+
 function openCreate() {
   editingId.value = '';
+  const firstAvailable = boardStore.guqinNos.find((no) => !reworkStore.hasPending(no)) ?? boardStore.guqinNos[0] ?? 'Q-2506';
   form.value = {
-    guqinNo: boardStore.guqinNos[0] ?? 'Q-2506',
+    guqinNo: firstAvailable,
     stringType: '丝弦',
     nut: '红木雁足 + 丝绒扣',
     stringGap: 17,
@@ -110,6 +119,10 @@ function openEdit(stringing: Stringing) {
 async function submit() {
   const ok = await formRef.value?.validate().catch(() => false);
   if (!ok) return;
+  if (reworkStore.hasPending(form.value.guqinNo)) {
+    ElMessage.error(`琴号 ${form.value.guqinNo} 存在待复核返工，复核完成前不接受上弦评价`);
+    return;
+  }
   const payload = {
     guqinNo: form.value.guqinNo,
     stringType: form.value.stringType,
@@ -124,14 +137,18 @@ async function submit() {
     nineVirtues: tone.value.nineVirtues,
     keepVersion: true,
   };
-  if (editingId.value) {
-    await stringingStore.updateStringing(editingId.value, payload);
-    ElMessage.success('已保存评语，改动前的文字已存入版本对照');
-  } else {
-    await stringingStore.addStringing(payload);
-    ElMessage.success(`已登记 ${payload.guqinNo} 的上弦与音色评语`);
+  try {
+    if (editingId.value) {
+      await stringingStore.updateStringing(editingId.value, payload);
+      ElMessage.success('已保存评语，改动前的文字已存入版本对照');
+    } else {
+      await stringingStore.addStringing(payload);
+      ElMessage.success(`已登记 ${payload.guqinNo} 的上弦与音色评语`);
+    }
+    dialogVisible.value = false;
+  } catch (error) {
+    ElMessage.error((error as Error).message);
   }
-  dialogVisible.value = false;
 }
 
 async function remove(stringing: Stringing) {
@@ -139,8 +156,12 @@ async function remove(stringing: Stringing) {
     .then(() => true)
     .catch(() => false);
   if (!confirmed) return;
-  await stringingStore.removeStringing(stringing.id);
-  ElMessage.success('已删除');
+  try {
+    await stringingStore.removeStringing(stringing.id);
+    ElMessage.success('已删除');
+  } catch (error) {
+    ElMessage.error((error as Error).message);
+  }
 }
 </script>
 
@@ -148,6 +169,16 @@ async function remove(stringing: Stringing) {
   <div>
     <h2 class="page-title">上弦记录与音色文字评价</h2>
     <p class="page-desc">散音 / 按音 / 泛音三段评语均为纯文本，保存后可检索关键字并对照历史版本；不做音频文件与波形处理。</p>
+
+    <el-alert
+      v-if="blockedGuqinNos.length"
+      class="block-alert"
+      type="warning"
+      show-icon
+      :closable="false"
+      title="以下琴号存在待复核返工，复核完成前不接受上弦评价"
+      :description="blockedGuqinNos.join('、')"
+    />
 
     <div class="toolbar">
       <el-button type="primary" @click="openCreate">登记上弦记录</el-button>
@@ -169,7 +200,12 @@ async function remove(stringing: Stringing) {
 
     <el-card v-else shadow="never" class="block">
       <el-table :data="visible" size="small" border>
-        <el-table-column prop="guqinNo" label="琴号" width="100" />
+        <el-table-column label="琴号" width="120">
+          <template #default="scope">
+            <span>{{ scope.row.guqinNo }}</span>
+            <el-tag v-if="reworkStore.hasPending(scope.row.guqinNo)" type="danger" size="small" class="block-tag">待复核</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="stringType" label="弦材质" width="90" />
         <el-table-column prop="nut" label="雁足与绒扣" width="170" />
         <el-table-column prop="stringGap" label="弦距(mm)" width="90" />
@@ -209,6 +245,14 @@ async function remove(stringing: Stringing) {
     </el-card>
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑上弦记录与评语' : '登记上弦记录'" width="820px">
+      <el-alert
+        v-if="selectedBlocked"
+        class="block-alert"
+        type="error"
+        show-icon
+        :closable="false"
+        :title="`琴号 ${form.guqinNo} 存在待复核返工，上弦页不接受评价；请先到「返工处置」完成复核`"
+      />
       <el-form ref="formRef" :model="form" :rules="rules" label-width="120px">
         <el-form-item label="琴号" prop="guqinNo">
           <el-input v-model="form.guqinNo" placeholder="如：Q-2506" maxlength="20" style="width: 200px" />
@@ -241,7 +285,7 @@ async function remove(stringing: Stringing) {
 
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="submit">保存</el-button>
+        <el-button type="primary" :disabled="selectedBlocked" @click="submit">保存</el-button>
       </template>
     </el-dialog>
   </div>
@@ -265,10 +309,16 @@ async function remove(stringing: Stringing) {
   margin-bottom: 12px;
   flex-wrap: wrap;
 }
+.block-alert {
+  margin-bottom: 12px;
+}
 .block {
   border-radius: 8px;
 }
 .defect-tag {
   margin-right: 4px;
+}
+.block-tag {
+  margin-left: 4px;
 }
 </style>
